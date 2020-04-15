@@ -1,0 +1,875 @@
+---
+title: "Imputation fo ADNI genotype"
+author: "Xiaoran Tong"
+output: html_document
+---
+
+ADNI has  three GWAS  wide calls:  **ADNI1**, **ADNI2/GO**,  and **WGS/Omni25**,
+where
+
+  * roughly half of the 600K variants in ADNI1 are unique;
+  * the 700K variants in ADNI2/GO are covered by WGS/Omni25;
+  * WGS/Omni25 has 2.4M variants.
+
+Merging of the later two was  somewhat statisfactory since at least all variants
+in ADNI2/GO are  preserved and allele frequencies matched  well between ADNI2/GO
+and WGS/Omni23. Merging  all three however, reduces the number  of variants to a
+mere   32K,   due   those   unique  to   ADNI1.   See   **__src/cal.Rmd__**   or
+**__doc/cal.html__** for more details.
+
+To address  this issue, also  to elevate the  testable variants to  whole genome
+sequencing (WGS) scale, we impute genotype for all three calls, using either
+
+  1. [Minimac4][MM4] developed by University of Michigan (UoM), or
+  2. [Minichgan Imputation Server][MIS] hosted by UoM.
+
+
+# Preperation
+
+## Software
+
+Be sure  to have plink1.9  downloaded and  directly accessible from  the command
+line, or "module load" it on MSU HPCC.
+
+Minimac4 is not availabe  on HPCC MSU, first install **cget**  to the user home,
+then enable cmake 2.2 or higher via module load, and install Minimac4:
+
+```{sh, eval=FALSE}
+pip3 install cget --user
+module load CMake/3.3.1
+cget install --prefix $GRP/app/minimac4 statgen/Minimac4
+```
+
+When  done,  make  sure  __{g}/app/minimac4/bin__  is on  the  search  path,  so
+**minimac4** can  be directly invoked  from the  command line. Here  {g} denotes
+space shared by research group members.
+
+## GWAS calls
+Some pre-processing have been done to all 3 GWAS calls:
+
+  * lift ADNI1 from NCBI36 to GRCh37 genome assembly;
+  * merge two parts of ADNI2/GO into a single one;
+  * clean up duplicated variants in all 3 calls.
+ 
+The corresponding file sets are under __{p}/raw/cal/001__ by the name 12, 22 and
+32, respectively. See __src/cal.Rmd__ for more details.
+
+For imputation, files will be put  in __{p}/raw/imp/__. As a starting point, and
+for  the ease  of referencing,  create links  to pre-processed  GWAS calls  from
+within __{p}/raw/imp/000__:
+
+```{sh, eval=TRUE}
+p=$GRP/adni; cd $p              # project directory
+w=raw;       cd $w              # working directory - raw data
+s=cal/001                       # GWAS wide variant calls
+d=imp/000; mkdir -p $d          # starting point of imputation
+
+cd $d
+ln -sf ../../$s/[1-3]1.{bed,bim,fam} .
+cd ../../
+# inspection links
+ls -lh $d/* | awk '{print $9,$10,$11}' | column -t
+# inspection sizes
+ls -Lhl $d/* | awk '{print $5,$9}' | column -t -R1
+```
+
+## Reference panel
+
+Imputation requires reference panel, consider [HRC] (The Haplotype
+Reference Consortium) v1.1 or 1000 genome project, phase 3 v5.
+
+### HRC v1.1
+
+The Haplotype Reference Consortium is huge:
+
+  * 32,390 samples genomes (only 2,504 from 1000 genome);
+  * 64,976 haplotypes at 39,235,157 SNPs, all with an estimated minor
+    allele count of >= 5;
+
+It is not easy to obtain such a huge panel, fortunately the providers
+have processed and put it on the [UoM imputation server][MIS] as a
+choice. When using the service, we will choose HRC.
+
+For the retionele of imputation, and the use of Minimac with HRC
+panel, visit this paper: [Next-generation genotype imputation service
+and methods](www.ncbi.nlm.nih.gov/pubmed/27571263).
+
+### KGP p3v5
+
+When using Minimac4 to conduct imputation by ourselves, we use KGP
+p3v5 as the panel, which aligns to human genome assembly build 37, and
+is readily [downloadable][H37].
+
+However, Minimac4[MM4] requires a condensed panel in M3VCF (Minimac3
+VCF) format. Fortunately, we can download the processed KGP panel in
+M3VCF [here][KGP] on Minimac' wiki page.
+
+[H37]: ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/
+[MIS]: https://imputationserver.sph.umich.edu
+[MM4]: https://genome.sph.umich.edu/wiki/Minimac4
+[KGP]: ftp://share.sph.umich.edu/minimac3/G1K_P3_M3VCF_FILES_WITH_ESTIMATES.tar.gz
+[HRC]: http://www.haplotype-reference-consortium.org
+
+```{sh, eval=FALSE}
+p=$GRP/adni;   cd $p            # project directory
+w=raw/imp;     cd $w            # working directory
+d=ref/kgp_h37; mkdir -p $d      # KGP reference panel
+
+# download 1000G reference panel in compact format
+url=ftp://share.sph.umich.edu/minimac3/G1K_P3_M3VCF_FILES_WITH_ESTIMATES.tar.gz
+curl $url --output tmp.tar.gz
+tar -xvf tmp.tar.gz -C $d
+rm tmp.tar.gz
+
+# rename the chromosome files to double digits
+cd $d
+for f in {1..22}.*.m3vcf.gz; do
+    mv $f $(printf %02d ${f%%.*}).m3vcf.gz
+done                                        # autosomes
+mv X.Pseudo.Auto.*.m3vcf.gz 25.m3vcf.gz     # pseudo autosome region (PAR) on X
+mv X.Non.Pseudo.Auto.*.m3vcf.gz 23.m3vcf.gz # X chromosome without PAR
+```
+
+The reference panel is saved to __{p}/raw/imp/ref/kgp_h37__, named as
+01-22 for the autosomes, 23 for X, and 25 for pseudo autosome region
+on X (also called XY).
+
+```{sh, eval=TRUE}
+p=$GRP/adni;   cd $p            # project directory
+w=raw/imp;     cd $w            # working directory
+d=ref/kgp_h37                   # KGP reference panel
+ls -gGh $d/* | cut -f3- -d' '
+```
+
+# Quality Control I
+
+It is necessary to quality control both variant wise and sample wise
+before imputation.
+
+The order of variant and sample QC affects the result, we remove low
+quality varaints first in favor of preserving samples.
+
+Retain variants with these criteria:
+
+  * MAF $\ge$ 0.01;
+  * missing rate less than
+    - 0.05, for ADNI1
+    - 0.03, for ADNI2/GO
+    - 0.05,  for Omni25M
+    which ensure the HWE  observation counts vary not more than 10%;
+  * HWE test p-value < 1e-6, performed among baseline white controls;
+  * known to have evidence of  poor clustering on visual inspection of intensity
+    plots (*not current enforced*).
+    
+Then, drop individuals with the following critera:
+
+  * non-white.
+  * missing rates >= 0.05;
+  * excessive autosomal heterozygosity;
+  * duplicates (twins), 1st, or 2nd degree relatives (break kinships,
+  unless the analysis will account for families);
+  * Wrong gender (excessive X-chromosome homozygosity in males)
+  * XXY genotype etc.
+  
+For now, only the first rule is enforeced.
+
+```{sh, eval=FALSE}
+cd $GRP/adni/raw/imp            # working dir - ADNI imputation
+s=000                           # start with GWAS calls
+d=001; mkdir -p $d              # put QC result here
+
+# find white, baseline controls
+y=$p/raw/phe/ADNIMERGE.csv
+tr <$y -d '"' | awk -v FS=, '$13=="White" {print $2}' | sort -u > eur.iid
+tr <$y -d '"' | awk -v FS=, '$13=="White" && $3=="bl" && $8=="CN" {print $2}' | sort -u > con.iid
+
+# missing rate thresholds
+g=( 0.0 0.05 0.03 0.05 ) 
+for c in {1..3}; do
+    i=$s/${c}1
+    o=$d/${c}1
+    join eur.iid <(sort $i.fam -k2,2) -2 2 -o2.{1..6} > eur.fam
+    join con.iid <(sort $i.fam -k2,2) -2 2 -o2.{1..6} > con.fam
+    # autosomes, PAR, and MT:
+    plink2 --bfile $i --maf .01 --geno ${g[$c]} --make-just-bim --out q1
+    plink2 --bfile $i --extract q1.bim --keep con.fam --hwe 1e-6 --make-just-bim --out q1
+    plink  --bfile $i --extract q1.bim --keep eur.fam --mind .05 --make-bed --out $o
+done
+rm -rf *{bim,fam,bed}           # clean up
+rm -rf {.,$d}/*.log con.* eur.*
+```
+
+Here we use __plink2__ for HWE test, which automatically take special
+care for X-chromosome by only allowing females as informative points,
+but __plink2__ --make-bed merges non-PAR X with PAR, which is not a
+desired behavior, thus we only let __plink2__ to write down variants
+to be preserved in __qc.bim__, and continue with __plink1__.
+
+The result are put in "__{p}/raw/imp/001__", prefixed by 11, 21 and 31
+for ADNI1, ADNI2/GO, and WGS/Omni2.5M, respectively. Here we show the
+number of variants and individuals passed QC.
+```{sh, eval=TRUE}
+p=$GRP/adni; cd $p              # project directory
+w=raw/imp;   cd $w              # working directory - for imputation
+s=000                           # starting point - GWAS calls
+d=001                           # past quality control
+for c in {1..3}1; do
+    echo
+    printf "%d: %8d / %8d var passed\n" $c $(cat $d/$c.bim | wc -l) $(cat $s/$c.bim | wc -l)
+    printf "%d: %8d / %8d ind passed\n" $c $(cat $d/$c.fam | wc -l) $(cat $s/$c.fam | wc -l)
+done
+```
+
+
+# Allele Check
+
+The [instructions][qc1] on Michigan Imputation Server suggest checking
+allele frequency and order before imputation, which also redirects to
+tools and reference tables on [McCarthy Group Tools][qc2].
+
+First, download reference table and tools from section __HRC or 1000G
+Imputation preparation and checking__ on [McCarthy Group Tools][qc2]:
+
+```{sh, eval=FALSE}
+cd $GRP/adni/raw/imp            # working directory - imputation
+d=utl; mkdir -p $d              # utilities
+cd $d
+# latest checker tool
+wget https://www.well.ox.ac.uk/~wrayner/tools/HRC-1000G-check-bim-v4.2.11.zip
+unzip HRC-1000G-check-bim-v4.2.11.zip
+rm HRC-1000G-check-bim-v4.2.11.zip
+# reference table for HRC
+wget ftp://ngs.sanger.ac.uk/production/hrc/HRC.r1-1/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
+gunzip HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
+# reference table for KGP
+wget https://www.well.ox.ac.uk/~wrayner/tools/1000GP_Phase3_combined.legend.gz
+gunzip 1000GP_Phase3_combined.legend.gz
+```
+
+When done, the following appeare in **{p}/raw/imp/utl**:
+
+  * [HRC-1000G-check-bim.pl][qc3]: script to check PLINK BIM files.
+    - Checks: Strand, alleles, position, Ref/Alt assignments and
+    frequency differences.
+    - Produces: A set of plink commands to update or remove SNPs based
+    on the checks as well as a file (FreqPlot) of cohort allele
+    frequency vs reference panel allele frequency.
+    - Updates: Strand, position, ref/alt assignment
+    - Removes: A/T & G/C SNPs if MAF > 0.4, SNPs with differing
+    alleles, SNPs with > 0.2 allele frequency difference (can be
+    removed/changed in V4.2.2), SNPs not in reference panel HRC/1000G
+    for strand, id names, positions, alleles, and ref/alt assignment;
+  * HRC.r1-1.GRCh37.wgs.mac5.sites.tab: reference table for HRC;
+  * 1000GP_Phase3_combined.legend: reference table for KGP p3.
+
+[qc1]: https://imputationserver.readthedocs.io/en/latest/prepare-your-data/
+[qc2]: https://www.well.ox.ac.uk/~wrayner/tools/#Checking
+[qc3]: https://www.well.ox.ac.uk/~wrayner/tools/HRC-1000G-check-bim-v4.2.11.zip
+
+Checks and update genotypes under __{p}/raw/imp/001__, write output to
+**{p}/raw/imp/002**:
+```{sh, eval=FALSE}
+p=$GRP/adni; cd $p              # project directory
+w=raw/imp;   cd $w              # working directory - imputation
+s=001                           # pre-imputation GT past QC
+d=002; mkdir -p $d              # checked and corrected genotype
+
+# set up WD for each ADNI call, run the checking script
+for c in {11,21,31}; do
+    cd $p/$w                    # goto present working directory (PWD)
+    mkdir -p $d/$c              # temporary WD (TWD) for one ADNI call
+
+    # merge X and PAR, write to the temp WD
+    [ -e $d/$c/cal.bed ] || plink --bfile $s/$c --merge-x --make-bed --out $d/$c/cal
+    # calculate local allele frequency
+    [ -e $d/$c/cal.frq ] || plink --bfile $d/$c/cal --freq --out $d/$c/cal
+    # link in reference allele frequency table and checking script
+    ln -sf ../../utl/HRC-1000G-check-bim.pl             $d/$c/chk.pl
+    ln -sf ../../utl/1000GP_Phase3_combined.legend      $d/$c/kgp.tab
+    ln -sf ../../utl/HRC.r1-1.GRCh37.wgs.mac5.sites.tab $d/$c/hrc.tab
+
+    cd $d/$c                    # down to temp WD
+    # check with KGP
+    if [ ! -e run_kgp.sh ]; then
+        perl chk.pl -b cal.bim -f cal.frq -r kgp.tab -g -p EUR
+        mv Run-plink.sh run_kgp.sh
+    fi
+    # check with HRC
+    if [ ! -e run_hrc.sh ]; then
+        perl chk.pl -b cal.bim -f cal.frq -r hrc.tab -h
+        mv Run-plink.sh run_hrc.sh
+    fi
+    cd $p/$w
+done
+
+# run update
+printf "%s\n" $d/{11,21,31}" "{kgp,hrc} | while read twd ref; do
+    echo $twd $ref $p/$w/$twd
+    cd $p/$w/$twd               # enter temporary working directory
+    [ -e hg.$ref.bed -a -e hg.$ref.fam -a -e hg.$ref.bim ] && continue
+
+    # make correction with respect to KGP or HRC
+    sh run_${ref}.sh
+
+    # rename
+    for f in *updated-chr*; do  # for chromosomes
+        n=${f#*chr}
+        e=${n#*.}
+        n=${n%.*}
+        mv $f $ref.$(printf %02d $n).$e
+    done
+    for e in {bed,bim,fam}; do  # for the entire genome
+        mv cal-updated.$e $ref.hg.$e
+    done
+done
+```
+
+When  done,   __11__,  __21__  and  __31__   appear  under  **{p}/raw/imp/002**,
+corresponding to  three ADNI GWAS  calls, each  contains some PLINK  files named
+{REF}.{CHROM}.*, where
+
+  * REF denotes reference that was checked and updated against;
+    - kgp: 1000 Genome Project reference;
+    - hrc: HRC reference genome.
+  * CHROM denotes chromosome 01-23;
+    - the allele checking merged PAR back into X-chromosome
+    - **hg** denotes whole genome merged;
+
+Note: *A1/A2  in the 5th and  6th columns of  BIM files are not  PLINK's default
+minor/major  alleles, but  forced to  correct REF/ALT  alleles in  the reference
+panel of choice.*
+
+Because of this, special care must be taken when later convering PLINK
+file sets to VCF files.
+
+Inspect the outcome of allele check and update:
+```{sh, eval=TRUE}
+p=$GRP/adni; cd $p              # project directory
+w=raw/imp;   cd $w              # working directory - imputation
+s=001                           # pre-imputation GT past QC
+d=002; mkdir -p $d              # checked and updated genotype
+
+# outcome BED files
+# paste <(ls $d/11/*[0-9].bed) <(ls $d/21/*[0-9].bed) <(ls $d/31/*[0-9].bed)
+
+# summerize variant preservation
+printf "%s\n" {11,21,31}" "{kgp,hrc} | while read c r; do
+    a=$(cat $s/$c.bim | wc -l)
+    b=$(cat $d/$c/$r.hg.bim | wc -l)
+    printf "%s on %s: %8d / %8d var retained\n" $c $r $b $a
+done
+```
+
+HRC allowed more variants in pre-imputation calls. To push KGP to the
+best, the population might have to be divided by race (i.e., white,
+black, hispanic, etc), and have each group checked against the closest
+population in KGP (i.e., ERU, AMR, etc).
+
+
+# Convertion
+
+Minimac accept VCF4 input and impute one chromosome at a time. Convert
+output in **{p}/raw/imp/003** to block compressed VCF (*.vcf.gz), one
+chromosomes per file, 
+
+retaining "AGCT" coded variants only, or not?
+
+By looking at the KGB reference panel we downloaded earlier, Miniac is
+capable of imputing autosomes (1-22), X without PAR (23), and the PAR
+(25). We will only convert these chromosomes and PAR.
+
+Care must be taken that Minimac4 only recoganize chromosome X, Y and
+PAR as charactor "X", "Y", and "X" (PAR is in X, after all), not their
+numeric code 23, 24 and 25. Before extracting chromosomes from PLINK
+file sets, change the chromosome name first.
+
+```{sh, eval=FALSE}
+p=$GRP/adni; cd $p              # project directory
+w=raw/imp;   cd $w              # working directory - imputation
+s=002                           # post QC and allele check
+d=003; mkdir -p $d              # separated and converted genome.
+K=/dev/null                     # the sink to absorb screen printing.
+
+for c in {11,21,31}; do
+    mkdir -p $d/$c
+    # autosomes
+    for r in {kgp,hrc}.{01..22}; do
+        i=$s/$c/$r              # input file: chromosome.reference
+        o=$d/$c/$r
+        [ -e $o.vcf.gz ] && continue
+        echo $i $o
+        plink --bfile $i --real-ref-alleles --a1-allele $i.bim 5 2 \
+              --recode vcf-iid bgz --out $o >$K
+    done
+
+    # X chromosome: split into PAR and non-PAR, change coding to X
+    for r in {kgp,hrc}.23; do
+        i=$s/$c/$r              # input file: chromosome.reference
+        x=$d/$c/$r              # X chromosome
+        a=${x/23/25}            # PAR
+        t=$d/$c/tmp             # temp file
+        [ -e $x.vcf.gz -a -e $a.vcf.gz ] && continue
+        echo $i $x $a
+        plink --bfile $i --keep-allele-order --split-x b37 \
+              --make-bed --out $x >$K
+        plink --bfile $x --real-ref-alleles --a1-allele $x.bim 5 2 \
+              --chr 23 --recode vcf-iid bgz --out $x &>$K
+        plink --bfile $x --real-ref-alleles --a1-allele $x.bim 5 2 \
+              --chr 25 --recode vcf-iid bgz --out $a &>$K
+        zcat $x.vcf.gz | sed 's/^23/X/' | bgzip > $t; mv $t $x.vcf.gz
+        zcat $a.vcf.gz | sed 's/^25/X/' | bgzip > $t; mv $t $a.vcf.gz
+        rm -rf $x.{bed,bim,fam,hh,nosex}
+    done
+done
+grep -i "erro" $d/{11,21,31}/*.log     # errors?
+grep -i "warn" $d/{11,21,31}/*.log     # warnings?
+rm -rf $d/{11,21,31}/*.log             # clean up
+```
+
+The previous step (allele check) forced A1/A2 in PLINK BIM files to be
+REF/ALT alleles in refernece panels, together with the default setting
+of plink, it is problematic:
+
+  * update A1/A2 to minor/major alleles by default;
+    - --keep-allele-order prevent this;
+    - --real-ref-alleles does the same, also removes the "PR" flag
+    (provisional reference) in the output VCF.
+  * by default, A2 -> REF, A1 -> ALT when writing VCF, but we have
+    A1=REF, A2=ALT.
+    - __--a1-allele *.bim 6 2__ forces plink reconsider the 6th column
+    in the input BIM, which is A2, as new A1.
+    
+When separating PAR from X, ignore the heterozygous haploid (hh)
+warnings caused by PAR prior to the separation.
+
+# Imputation
+
+## KGP + Minimac4.0
+
+In this case, use reference panel build from KGP (GRCh37 p3v5) by UoM,
+and saved it as **{p}/imp/ref/kgp_h37**.
+
+The output of imputation and the subsequent work require large space,
+use HPCC scratch space.
+
+```{sh, eval=FALSE}
+p=$GRP/adni; cd $p              # project directory
+w=raw/imp;   cd $w              # working directory - imputation
+s=003                           # source: GWAS calls in VCF
+g=kgp_h37                       # the reference panel
+d=$SCR/adni/imp/004/kgp;		# scratch space: imputate on KGP
+mkdir -p $d
+mkdir -p $d/ref
+# link in the output directory
+ln -sf $p/$w/$s       $d/$s		# GWAS calls
+ln -sf $p/$w/ref/$g/* $d/ref/   # reference panel
+for c in {11,21,31}; do         # outer loop: 3 GWAS wide calls
+    mkdir -p $d/$c
+    for r in {01..23} 25; do    # inner loop: chr 1-23 and PAR
+        i=$s/$c/kgp.$r.vcf.gz   # 
+        echo -n "minimac4 --refHaps ref/$r.m3vcf.gz --haps $i "
+		echo    "--format GT,DS,HDS,GP --prefix $c/$r --cpus 4"
+    done
+done | tee /tmp/cmd.sh
+hpcwp /tmp/cmd.sh -d$d -q1 -p4 -m8 -t4
+```
+
+This will take a while, so use __hpcwp__ to create and submit jobs to
+SLURM. Wait until all job finish in either success or failure.
+
+When done, files sufixed by dose.vcf.gz and info will appear for each
+chromosme, where the former contains imputed dosage value, the later
+is a table of variants, with $r^2$ statistics in the 7th column as a
+indication of imputation quality.
+
+```{sh, eval=TRUE}
+cd $SCR/adni/imp/004/kgp	# work in scratch: KGP imputed
+# rename dosage files, compress info files
+for f in {1..3}1/{01..26}; do
+    [ -e $f.dose.vcf.gz ] && mv $f.dose.vcf.gz $f.vcf.gz
+    [ -e $f.info ] && (bgzip $f.info && mv $f.info.gz $f.nfo.gz)
+done
+
+# peak the last info file (compressed):
+zcat $f.nfo.gz | head | column -t
+
+# inspect chromosome VCF(s)
+for c in {1..3}1; do
+    echo "Under $c:"
+    for i in {01..26}; do
+		[ -e $c/$i.vcf.gz ] || continue
+		echo $c/$i.*.gz N=$(bcftools query -l $c/$i.vcf.gz | wc -l)
+	done
+    echo
+done
+
+# look for errors
+# grep -i erro log/*
+```
+An error is recorded in __log/0017__ under __{p}/raw/imp/004/kgp/__, which
+says the 3rd chunk in chromosome 25 (PAR) overlaps less than 0.1% with
+the KGP reference. As a result, chromosome 25 (PAR) is lost in ADNI1's
+imputation, though rest of the genome was successfully.
+
+Create block indices for chromosome __vcf.gz__ files.
+```{sh, eval=FALSE}
+cd $SCR/adni/imp/004/kgp		# work in scratch: KGP imputed
+for v in {1..3}1/*.vcf.gz; do
+    echo bcftools index -t -f $v
+done | hpcwp - -q1 -t2 -m1
+```
+
+
+## HRC + Michigan Imputation Server
+
+Login the [imputation server][MIS], for each call 11, 21 and 31 under
+__{p}/raw/imp/003__, create a job on the server, upload all VCF files
+in the corresponding folder prefixed by panel name __"hrc"__ (i.e.,
+hrc.18.vcf.gz for the 18th chromosome); on the server, select __HRC__
+for reference panel and __mixed__ for population, then submit.
+
+When finish, download results for 3 GWAS calls from UoM and save them
+to 11, 21, and 31 under __{s}/adni/imp/004/hrc__, where __{s}__ denote
+scratch space on the HPCC server, which is need due to the size of
+imputation outputs. Each of the 3 result contains:
+  
+  * zip files for chromosomes: 
+    - autosomes 1 - 22;
+    - X chromosome without PAR, numbered 23;
+	- the PAR separated from X, numbered 25.
+  * log files for each chromosome's imputation;
+  * text file of errors and warnings if any happened;
+  * a unzipping password emailed from the imputation server, written it into a
+    file named __uzp.pwd__.
+  
+Move the downloads further down to a sub directory "dwn" for keeping.
+In a few days UM will delete the copy. Here we inspect the downloaded
+zip, log and error text:
+
+```{sh, eval=TRUE}
+cd $SCR/adni/imp/004/hrc		# work under scratch: HRC imputed
+for c in {11,21,31}; do
+    echo
+    echo Under $c:
+    for i in $c/dwn/chr_{{1..22},X}; do # first 3 zip files
+        echo ${i}.{zip,*log}
+    done | column -t | head -n 3
+    echo ... ...
+    for i in $c/dwn/chr_{{1..22},X}; do # last 3 zip files
+        echo ${i}.{zip,*log}
+    done | column -t | tail -n 3; echo
+    for e in $c/dwn/*.txt; do	# errors and warnings
+        l=$(cat $e | wc -l)
+        echo "error/warning - ${e}: ($l lines)"
+        if [ $l -gt 10 ]; then
+            head -n 3 $e; echo "... ..."; tail -n 3 $e
+        else
+            cat $e
+        fi | column -t -s $'\t'
+    done; echo
+done
+# password files
+ls {11,21,31}/dwn/uzp.pwd
+```
+
+Unzipping one chromsome file gives two files:
+  
+  * {i}.dose.vcf.gz: the chromosome genotype in VCF format:
+    - GT: the hard called genotype allele coded by integer;
+    - GP: soft called genotype probability adding up to 1;
+  * {i}.info.gz: information of each variant (i.e., quality):
+    1. SNP, 2. REF(0), 3. ALT(1), 4. ALT_Frq, 5. MAF,
+    6. AvgCall: average call rate
+	7. Rsq: $r^2$ - posterior likelihood of imputed genotype.
+	8.  Genotyped: GENOTYPED or IMPUTED
+	9.  LooRsq: leave one out $r^2$;
+	10. EmpR:
+	11. EmpRsq: empirical $r^2$;
+	12. Dose0:
+	13. Dose1:
+    
+Unzip now!
+```{sh, eval=FALSE}
+w=$SCR/adni/imp/004/hrc; cd $w	# work under scratch: HRC imputed
+chr=({0..22} X)
+num=({00..23})
+for c in {11,21,31}; do
+    cd $c
+    for i in {1..23}; do
+        dz=${chr[$i]}.dosage.vcf.gz
+        vz=${num[$i]}.vcf.gz
+        echo dwn/chr_${chr[$i]}.zip
+        [ -e $dz -o -e $vz ] && continue
+        unzip -P $(cat dwn/uzp.pwd) dwn/chr_${chr[$i]}.zip
+    done; cd $w
+done
+```
+
+Rename the vcf.gz and info.gz for easy reference, then merge the info
+files into one per ADNI call.
+```{sh, eval=TRUE}
+cd $SCR/adni/imp/004/hrc		# work under scratch: HRC imputed
+chr=({0..22} X)
+num=({00..23})
+for c in {11,21,31}; do
+    # rename single digit to double digits
+    for i in {1..26}; do
+		[ -e $c/${num[$i]}.vcf.gz ] || mv $c/chr${chr[$i]}.dos* $c/${num[$i]}.vcf.gz
+		[ -e $c/${num[$i]}.nfo.gz ] || mv $c/chr${chr[$i]}.inf* $c/${num[$i]}.nfo.gz
+    done
+    # report vcf, nfo, and sample size
+    echo
+	echo Under $c:
+    for i in {01..26}; do
+		[ -e $c/$i.vcf.gz ] || continue
+		echo $c/$i.*.gz N=$(bcftools query -l $c/$i.vcf.gz | wc -l)
+	done
+done
+```
+In this imputation, no sample was dropped for any chromosomes.
+
+
+Create block indices for chromosome __vcf.gz__ files.
+```{sh, eval=FALSE}
+cd $SCR/adni/imp/004/hrc		# work under scratch: HRC imputed
+for v in {1..3}1/*.vcf.gz; do
+    echo bcftools index -t -f $v
+done | hpcwp - -q1 -t2 -m1
+```
+
+# Assess imputation
+
+## KGP
+
+Examing INFO files (*.nfo.gz). Pick 30K variants from all 3 GWAS call
+of both panels, with these 2 columns:
+
+  * col 1: temporary ID: CHR:POS:REF:ALT;
+  * col 7: imputation $r^2$ statistics.
+
+```{sh, eval=FALSE}
+cd $SCR/adni/imp/004            # work under scratch - imputated
+cal=(ADNI1 ADNI2/GO Omni25M)
+num=({00..23})
+for p in {kgp,hrc}; do
+	for c in {11,21,31}; do
+		for i in {01..26}; do
+			echo $p/$c/$i.rsq
+			## skip non-exist chromosome input
+			[ -e $p/$c/$i.nfo.gz ] || continue
+			## skip existing output
+			[ -e $p/$c/$i.rsq    ] && continue
+			# get ID and r2, sort by ID
+			zcat $p/$c/$i.nfo.gz | tail -n+2 | \
+				awk '{print $1,$7}' | \
+				sort -k1,1 >$p/$c/$i.rsq
+		done
+		# merge r2 on chromosomes for each call
+		echo $p/$c.rsq
+		[ -e $p/$c.rsq ] && continue
+		sort -m -k1,1 $p/$c/*.rsq > $p/$c.rsq
+    done
+	# paste r2 of all 3 calls
+	echo $p.rsq
+	[ -e $p.rsq ] && continue
+	echo -e "SNP\tADNI1\tADNI2/GO\tOmni25M"             > $p.rsq
+	join $p/[12]1.rsq | join - $p/31.rsq | tr ' ' '\t' >> $p.rsq
+
+done
+
+# take out 30K variants as a sample
+join <(tail -n+2 kgp.rsq) <(tail -n+2 hrc.rsq) -o 0 | shuf -n 10000 | sort > snp.30K
+
+head -n+1 kgp.rsq                            > kgp.rsq.30K
+tail -n+2 kgp.rsq | join - snp.30K -t $'\t' >> kgp.rsq.30K
+head -n+1 hrc.rsq                            > hrc.rsq.30K
+tail -n+2 hrc.rsq | join - snp.30K -t $'\t' >> hrc.rsq.30K
+```
+The file __{p}/raw/imp/004/hrc/mg.rsq.30K__ are $r^2$ statistics of 30K
+variants for the imputation of all 3 GWAS calls.
+
+Use R script to parse and plot imputation quality.
+```{r, eval=FALSE}
+setwd(file.path(Sys.getenv("SCR"), "adni/imp/004"))
+library(reshape2)
+library(ggplot2)
+
+doc <- "/mnt/research/StatGen/adni/doc/imp"
+dir.create(doc, FALSE, TRUE)
+
+hrc <- cbind(Pnl="HRC", read.delim("hrc.rsq.30K", row.names=1))
+kgp <- cbind(Pnl="KGP", read.delim("kgp.rsq.30K", row.names=1))
+stt <- rbind(hrc, kgp)
+
+d1 <- melt(stt, value.name="Rsq", variable.name="GWAS", id.vars="Pnl")
+## histogram of r^2
+g <- ggplot(d1) + geom_histogram(aes(x=Rsq, y=..density.., fill=GWAS), alpha=.4, binwidth=.02) +
+    facet_wrap(~Pnl) + theme(legend.position="bottom")
+ggsave(file.path(doc, "rsq_hst.pdf"), g, width=14, height=7)
+
+## qqplot: x-uniform y-r^2
+g <- ggplot(d1, aes(sample = Rsq)) +
+    stat_qq(distribution = qunif, aes(color=GWAS)) +
+    facet_wrap(~Pnl) + theme(legend.position="bottom")
+ggsave(file.path(doc, "rsq_qxq.pdf"), g, width=14, height=7)
+
+## ecdf
+rsq <- seq(0, 1, l=1e3)
+cdf <- by(d1, d1[, c("Pnl", "GWAS")], function(g)
+{
+    cdf <- ecdf(g$Rsq)
+    merge(g[1, 1:2], data.frame(Rsq=rsq, Prb=cdf(rsq)))
+})
+cdf <- do.call(rbind, cdf)
+g <- ggplot(cdf, aes(x=Rsq, y=Prb)) + geom_point(aes(color=GWAS), alpha=.5) +
+    facet_wrap(~Pnl) + theme(legend.position="bottom")
+ggsave(file.path(doc, "rsq_cdf.pdf"), g, width=14, height=7)
+
+## drop rate = 1 - ecdf
+g <- ggplot(cdf, aes(x=Rsq, y=1-Prb)) + geom_point(aes(color=GWAS), alpha=.5) +
+    facet_wrap(~Pnl) + theme(legend.position="bottom")
+ggsave(file.path(doc, "rsq_dpr.pdf"), g, width=14, height=7)
+```
+Four plots of $r^2$ statistics are saved under __{p}/doc/imp__:
+
+  * rsq_hst: the histogram of $r^2$, less to the left means better;
+  * rsq_qxq: QQ plot, more to the top left means faster raising of
+  $r^2$ (means better);
+  * rsq_cdf: CDF of $r^2$, more to the bottom right means $r^2$ more
+  densely distributed on high values (close to 1);
+  * rsq_dpr: the drop rate at any $r^2$ cut-off, which is 1 - CDF;
+  more to the top left means less drop when $r^2$ threshold raises
+  (means better).
+  
+The plots suggest that:
+  
+  * HRC based imputation is much better than KGP;
+    - paphapse, a pure white population can result better for KGP.
+  * Omni25M is the best among the GWAS calls, for samples overlapping
+  with ADNI1 or ADNI2/GO, Omni25M is preferred.
+
+From the histgram, the cut-off of $r^2$ can be around 0.6, where all
+low quality and most medium quality variants are discarded.
+
+
+# Merge VCF
+
+The samples in Omni25M overlapping with either ADNI1 or ADNI2/GO
+should take precedence, because of Omni25M's higher quality of
+imputation (see __Assess imputation quality__ for more detail).
+Between ADNI1 and ADNI2/GO there is no overlapping according to
+document __cal.html__ or __cal.Rmd__.
+
+Begin with VCF in 11, 21 and 31 under __kgp__ and __hrc__, first drop
+samples from ADNI1 and ADNI2/GO in overlap with Omni25M, and save the
+uniqe smaples of ADNI1 and ADNI2/go to 21 and 22, respectively.
+
+```{sh, eval=FALSE}
+cd $SCR/adni/imp/004			# work under scratch: HRC imputed
+mkdir -p {kgp,hrc}/{1..2}2		# samples uniqe to ADNI1, ADNI2/GO
+for c in {kgp,hrc}/{1,2}; do
+	p=${c%%/*}					# imputation panel
+	s=${c}1						# orig: 11=ADNI1, 21=ADNI2/GO
+	d=${c}2						# uniq: 12=ADNI1, 22=ADNI2/GO
+	ln -sf ../../$p $d			# link to the panel
+	for v in $s/*.vcf.gz; do
+		r=${v##*/}				# chromosome number
+		r=${r%%.*}
+		bcftools query -l $p/31/$r.vcf.gz > $d/$r.ii3 # Onmi25M samples
+		echo bcftools view $v -S ^$r.ii3 --force-samples -Oz -o $r.vcf.gz
+		echo bcftools index -t -f $r.vcf.gz
+	done | hpcwp - -d$d -q2 -t2 -m4 --log None
+	# grep -h view $d/cms/* | head -n 3
+	# grep -h view $d/cms/* | tail -n 3
+done
+
+for p in {kgp,hrc}; do
+	d=$p/40; mkdir -p $d		# all sample merged
+	ln -sf ../../$p $d			# link to the panel
+	for i in {01..26}; do
+		# skip chromosomes with no imputation at all
+		ls $p/{[12]2,31}/$i.vcf.gz &>/dev/null || continue
+		# ls $p/{[12]2,31}/$i.vcf.gz
+		echo -n "bcftools merge $(ls -x $p/{[12]2,31}/$i.vcf.gz) -i R2:min | "
+		echo -n "bcftools annotate -x ^INFO/R2"
+		echo "-Oz -o $i.vcf.gz"
+		echo bcftools index -t $i.vcf.gz
+	done | hpcwp - -d$d -q2 -t2 -m1 --log None
+	# grep -h merge $d/cms/* | head -n 3
+	# grep -h merge $d/cms/* | tail -n 3
+done
+```
+The data merged from 3 GWAS calls is saved to
+
+  * __{s}/adni/imp/004/hrc/40__ and
+  * __{s}/adni/imp/004/kgp/40__
+
+for HRC and KGP based imputation, repectively, were {s} is the root of
+scratch space.
+
+
+# Annotation
+
+Assign variant ID (i.e., rs ID) to imputed variants in VCF files. Use
+dbSNP annotation v153 downloaded from here.
+
+In our case, dbSNP153 has been [downloaded][dbSNP], processed, and
+saved to __{g}/kgp/raw/snp/GRCh37_SNP153.vcf.gz__, where **kgp** was
+created for 1000 Genome related works under research group **{g}**.
+See [kgp/src/ann.html][ann1] and [kgp/src/ann.Rmd][ann2] for details.
+
+[dbSNP]:ftp://ftp.ncbi.nih.gov/snp/latest_release/VCF
+[ann1]:http://htmlpreview.github.io/?https://github.com/xiaoran831213/kgp/blob/master/doc/ann.html
+[ann2]:https://github.com/xiaoran831213/kgp/blob/master/src/ann.Rmd
+
+```{sh, eval=FALSE}
+cd $SCR/adni/imp				# work in scratch: imputation
+s=004							# merged genotype
+d=005							# annotated genotype
+
+a=$GRP/kgp/raw/snp/GRCh37_SNP153.vcf.gz # the annotation: dbSNP
+
+mkdir -p $d/{kgp,hrc}
+ln -sf ../$s  $d/				# link to input
+ln -sf $a     $d/a.gz			# dbSNP annotation
+ln -sf $a.tbi $d/a.gz.tbi		# dbSNP annotation index
+printf "%s\n" {kgp,hrc}" "{01..26} | while read p r; do
+	v=$s/$p/40/$r.vcf.gz
+	[ -e $v ] || continue
+	echo "zcat $v | sed 's/^X/23/;s/^Y/24/;s/^MT/26/' | bgzip -c > $p/$r.tmp.gz"
+    echo "bcftools index -t -f $p/$r.tmp.gz"
+    echo "bcftools annotate $p/$r.tmp.gz -a a.gz -c ID -Oz -o $p/$r.vcf.gz"
+    echo "bcftools index -t -f $p/$r.vcf.gz"
+    echo "rm $p/$r.tmp.gz*"
+done | tee tmp.cmd
+hpcwp tmp.cmd -d$d -q5 --wtm 4 -m4 --log None
+```
+The results are saved to __{s}/adni/imp/005/kgp__ and
+**{s}/adni/imp/005/hrc**.
+
+
+# Save and Cleanup 
+
+Copy the final proudcts and INFO file from scratch space back to
+project directory. For now, save HRC only for its higher quality.
+
+The plots of $r^2$ and have been saved to __{p}/doc__ in section
+**Assess imputation**.
+
+Remoeve intermediate files in the project directory.
+
+```{sh, eval=FALSE}
+# save the unzipped, renamed downloads from UoM
+d=$GRP/adni/raw/imp/hrc; mkdir -p $d
+s=$SCR/adni/imp/004/hrc
+mkdir -p $d/ADNI1; cp $s/11/*.{vcf,nfo}.gz* $d/ADNI1
+mkdir -p $d/ADNI2; cp $s/21/*.{vcf,nfo}.gz* $d/ADNI2
+mkdir -p $d/OMN25; cp $s/31/*.{vcf,nfo}.gz* $d/OMN25
+# save the merged, annotated imputation result
+d=$GRP/adni/raw/imp/hrc
+s=$SCR/adni/imp/005/hrc
+cp $s/*.vcf.gz* $d/
+# clean up
+cd $GRP/adni/raw/imp
+rm -rf 001 002 003 ref utl
+```

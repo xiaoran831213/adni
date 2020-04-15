@@ -1,0 +1,584 @@
+---
+title: "ADNI: merge called genotype variants"
+author: "Xiaoran Tong"
+output: "html_document"
+---
+
+We would like to merge three GWAS wide calls for ADNI (Alzheimer’s
+Disease Neuroimaging Initiative) into one genotype data.
+
+
+# Introduction
+
+By the time of 11-18-2019, ADNI have provided two sets of variant
+calling:
+
+  * ADNI1 GWAS
+    - version 2
+    - genotyped using the Illumina Human610-Quad BeadChip
+    - intensity data processed with GenomeStudio v2009.1
+	- in PLINK format.
+  * ADNI2/GO
+    - version 1, 2013-06-2
+    - genotyped using the Illumina HumanOmniExpress BeadChip
+    - intensity data processed with GenomeStudio v2009.1
+	- in PLINK format, two parts
+  * Omni2.5M
+    - version 2014-02-20;
+	- genotyped using the Ilumina Omni 2.5M BeadChip;
+	- accompanied a WGS (whole-genome sequence) recall of ADNI1/2/GO;
+	- in PLINK format.
+
+See document __{p}/doc/ADNI\_Genetics\_Info_March2011.pdf__, for more
+details, where __{p}__ stands for the root directory of ADNI related
+project.
+
+
+# Issues
+
+The earlest call (ADNI1) was based on human reference genome build
+GRCh36/GH18, which has to be lifted to GRCh37 to match later calls
+(ADNI2/GO and Omni2.5M).
+
+Some ADNI participants may underwent more than one genotype call, the
+merged data must ensure the same individual only have one genotype.
+
+
+# Downloads
+
+At [ADNI][], goto [ACCESS DATA and SAMPLES][DATA] and login.
+
+Goto **DOWNLOAD --> Genetic Data**, in the openned page, go through
+three items in panel to the left:
+
+  * ADNI WGS + Omni2.5M,
+  * ADNI1 GWAS,
+  * and ADNIGO/2 GWAS,
+
+download all called SNP in PLINK format. In our case, the downloads
+are put under __{p}/raw/cal/dwn__ and decompressed:
+
+```{sh, eval=TRUE}
+p=$GRP/adni;    cd $p           # project directory
+ls -gh $p/raw/cal/dwn           # downloads
+```
+
+Here we roughly sort the chronological order of the data:
+
+  * earlier calls
+    - ADNI1 GWAS: **ADNI_cluster_01_forward_757LONI**;
+	- ADNIGO/2 GWAS: 
+	  * part 1: **ADNI_GO_2_Forward_Bin**;
+	  * part 2: **ADNI_GO2_GWAS_2nd_orig_BIN**;
+  * recent call
+    - ADNI WGS + Omni2.5M: **WGS_Omni25_BIN_wo_ConsentsIssues**
+	
+To make refering to these files easier, we create shortened links
+under __{p}/raw/cal/000__:
+
+```{sh, eval=TRUE}
+p=$GRP/adni;         cd $p      # project directory
+d=raw/cal/000; mkdir -p $d      # target
+
+for e in {bed,bim,fam}; do		# create links
+    ln -sf ../dwn/ADNI_cluster_01_forward_757LONI.$e  $d/11.$e
+    ln -sf ../dwn/ADNI_GO_2_Forward_Bin.$e            $d/21.$e
+    ln -sf ../dwn/ADNI_GO2_GWAS_2nd_orig_BIN.$e       $d/22.$e
+    ln -sf ../dwn/WGS_Omni25_BIN_wo_ConsentsIssues.$e $d/31.$e
+done
+ls -Ggh $d/* | cut -f8- -d' '	# show case
+```
+
+[ADNI]:http://adni.loni.usc.edu
+[DATA]:http://adni.loni.usc.edu/data-samples/access-data
+
+# Exam 1
+
+Do some basic checking, quality control, and conversion.
+
+## ADNI1
+
+It seems ADNI1 is based on an earlier verision of human reference genome. Taking
+a few  ID from  **{p}/cal/000/11.bim** and search  on [UCSC][].   After choosing
+between NCBI36/HG18 and GRCh37/HG19, it confirms that ADNI1 was based on GRCh36.
+
+It is necessary to align ADNI1 to build 37, using [UCSC genome liftover][lift].
+
+Extract variant positions from BIM file and save them as [UCSC BED][].
+
+[lift]:https://genome.ucsc.edu/cgi-bin/hgLiftOver
+[UCSC]:genome.ucsc.edu/cgi-bin/hgGateway
+[UCSC BED]:https://genome.ucsc.edu/FAQ/FAQformat.html#format1
+
+Special care is need when handling X chromosome's pseudo-autosome
+region which is preferrablly treated as a stand alone chromosome **XY*
+by PLINK and given the number 25, but as part of the **X** chromosome
+(numbered 23) by many including UCSC's lift over service.
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal;      cd $w	# working directory - GWAS calls
+
+# merge XY-25 (PAR) back into X-23 (non-PAR)
+plink --bfile 000/11 --merge-x --make-bed --out tmp
+# convert ADNI1's BIM to UCSC BED
+sed <tmp.bim 's/^23/X/; s/^24/Y/; s/^26/M/' | \
+    awk 'OFS="\t" {print "chr"$1,$4-1,$4,$2}' > 000/11.b36
+
+# preview
+echo "ADNI1 - PLINK BIM:"
+head 000/11.b36 | column -t
+echo
+echo "ADNI1 - UCSC  BED:"
+head 000/11.b36 | column -t
+```
+
+On the [liftover page][lift], set _Original Assembly_ to (NCBI36/HG18)
+and _New Assembly_ to (GRCh37/hg19); hit **browse**, find **11.b36**
+just writen, and **submit file**. The service will drop a few variants
+due to failed matching.
+
+When done, under the **result** section, hit **View Conversions** to
+download the new coordinate. Put it under __{p}/raw/cal/000__ by the
+name __11.b37__.
+
+From the original b36 calls, extract successfully elevated variants
+according to __11.b37__, then overwrite their old, b36 coordinates
+with new coordinates in __11.b37__; lastly, split pseudo-autosome
+region (PAR) from X chromosome, and set male heterozygous haploid
+genotype in non-PAR to missing.
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p        # project directory
+w=raw/cal;         cd $w        # working directory
+s=000                           # downloads
+d=001; mkdir -p $d              # elevated and some clean up
+
+# extract elevated variants
+cut -f4 $s/11.b37 > elv
+plink --bfile tmp --extract elv --make-bed --out elv
+
+# overwrite positions with b37
+awk <elv.bim   '{print $2"\t"$0}'   | sort -k1,1b > bm1
+awk <$s/11.b37 '{print $4"\t"$2+1}' | sort -k1,1b > bm2
+join bm1 bm2 -t $'\t' -o 1.2,1.3,1.4,2.2,1.6,1.7 | sort -k1n,1 -k4n,4 > elv.bim
+
+# split X to PAR and non-PAR, also correct wrong assignment
+plink --bfile elv --split-x b37 --make-bed --out spx
+# treat heterozygous haploid genotype in non-PAR as missing.
+plink --bfile spx --set-hh-missing --make-bed --out $d/11
+# clean up
+rm {bm1,bm2,tmp,elv,spx}*
+rm $d/*.{hh,log}
+```
+
+Processed GWAS call for ADNI1 should appear under __{p}/raw/cal/001__
+as a PLINK file set prefixed by __11__, aligned to GRCh37.
+
+SPX:https://www.cog-genomics.org/plink/1.9/data#split_x
+
+When using plink's [--split-x][SPX] facility to split X back into PAR
+and non-PAR, some PAR variants in the original ADNI1 call, that is
+"chromosome" 25-XY fell right into non-PAR range X:2709521-154584237
+(see 'b37'/'hg19' [here][SPX]). Here are PAR variants re-assigned to
+non-PAR by [--split-x][SPX]:
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p        # project directory
+w=raw/cal/000;     cd $w        # working directory -- original ADNI1
+awk <11.bim '$1==25 && 2709521 <= $4 && $4 <154584237'
+```
+Treat these variants as non-PAR may correct some mistakes, and if we
+instist in keeping them in the PAR, imputation can fail because they
+do not intersect with any PAR site in the reference panel at all.
+
+## ADNI2/GO
+
+Try to merge the two parts of ADNI2/GO, and mark male heterozygous
+haploid errors as missing.
+
+Check sample overlap:
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/000;  cd $w	# link to downloads
+cat 2[12].fam | cut -f2 -d' ' | sort | uniq -c > ind.cnt
+awk <ind.cnt '{print $1}' | sort | uniq -c
+```
+All 793 sample are unique across the two parts.
+
+Check variant inconsistancy:
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/000;  cd $w	# link to downloads
+cat 2[12].bim | cut -f1,2,4 | sort | uniq -c > snp.cnt
+awk <snp.cnt '{print $1}' | sort | uniq -c
+```
+716503 out of (716503 + 14022) variants are consistant between the two
+parts of ADNIGO/2.
+
+It is safe to merge the two parts of ADNIGO/2:
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal;         cd $w	# working directory
+s=000                           # link to downloads
+d=001                           # exam 1 output
+awk <$s/snp.cnt '$1>1 {print $3}' > vid
+plink --bfile 000/21 --bmerge 000/22 --extract vid --set-hh-missing --make-bed --out 001/21
+rm -rf $s/*.cnt vid
+```
+The merged call for ADNI2/GO is saved as **{p}/raw/cal/001/21**. The
+total genotyping rate of {p} is 0.997764
+
+
+## Omni2.5M
+
+For the latest call, just set male heterozygous haploid genotype in X
+chromosome (non-PAR) to missing:
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal;         cd $w	# working directory
+plink --bfile 000/31 --set-hh-missing --make-bed --out 001/31
+```
+
+The cleaned __Omni2.5M__ GWAS call should be saved as PLINK file set
+**{p}/raw/cal/001/31**.
+
+
+# Duplicate Variants
+
+Duplicated variants can be a headache for future analysis, try to
+retain only one of the duplicates.
+
+Find duplicate variates, with identical chromosome, basepair position,
+and the alleles types not necessarily in the same order; also collect
+allele frequency and missing rate.
+
+Do not worry about duplicated variant ID, which used to be a headache
+when merging separated chromosome files into a single genotype, since
+all three three calls have already been merged.
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype past exam 1
+K=/dev/null                 # the sink to absort screen print out
+for c in {1..3}1; do
+    # make temporary ID (CHR:BP:[ATCG]_[ATCG]) to identify duplicates
+    awk <$c.bim '{a=$5<$6?$5"_"$6:$6"_"$5; printf \
+        "%02d:%09d:%s\t%s\n", $1,$4,a,$0}' | sort -k1,1b > $c.snp
+    cut  $c.snp -f1 | uniq -c | awk '$1>1 {print $2}' |
+        join - $c.snp -t $'\t' > $c.dup.snp
+
+    # create reports of missing rate and minor allele freq
+    cut -f3 $c.dup.snp > $c.dup.vid
+    plink --bfile $c --extract $c.dup.vid --freq --missing --out $c.dup >$K
+    # index by variant id (vid): missing rate
+    awk <$c.dup.lmiss 'NR>1 {print $2,$5}' | sort -k1,1 > $c.dup.lmiss.rpt
+    # index by variant id (vid): allele frequncy
+    awk <$c.dup.frq   'NR>1 {print $2,$5}' | sort -k1,1 > $c.dup.frq.rpt
+
+    # join (TID, CHROM, *VID*, BP, A1, A2), and (*VID*, MISS, FREQ)
+    sort -k3,3 $c.dup.snp > $c.dup.snp.srt
+    join $c.dup.{lmiss,frq}.rpt > $c.dup.mix.rpt
+    join $c.dup.snp.srt $c.dup.mix.rpt -1 3 -2 1\
+         -o1.{1..7} -o2.{2,3} | sort -k1,1 | tr ' ' '\t' > $c.dup
+done
+wc -l *.dup.snp
+rm *.{snp,rpt,vid}              # clean up
+rm *.dup.*
+```
+
+The duplication found for 3 calls are written in table files surfixed
+by __dup__, with the following fields:
+
+  1. temporary ID made of **CHR:BP_A1_A2** (**TID**);
+  2. chromosome (**CHR**, '0' indicates unknown);
+  3. provided variant ID (**VID**);
+  4. position in morgans or centimorgans
+  5. base-pair coordinate (**BP**, 1-based)
+  6. allele 1 (**A1**, usually minor)
+  7. allele 2 (**A2**, usually major)
+  8. missing rate (**MIS**)
+  9. frequency of allele 1, usually the minor (**MAF**).
+
+where field 2 to 7 are directly taken from the original BIM file.
+
+With 11.dup, 21.dup, and 31.dup ready under __{p}/raw/cal/001__, try
+to retain the best variant in each clique of duplicates, and save the
+results with prefix as 12, 22, and 32 for the 3 calls, respectively.
+
+## ADNI1
+
+The duplicates for ADNI1 are listed in __{p}/raw/cal/001/11.dup__
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype after exam 1
+printf "%s:%8d duplicates\n" ADNI1 $(cat 11.dup.snp | wc -l)
+cat 11.dup | column -t
+```
+
+With only 4 lines of 2 duplicates, we mannuly clean it up. In favor of
+higher call rate, drop *500301* and *rs12643283* from plink file set
+__11.*__ (ADNI1), and save the result to __12.*__ inside the same
+directory __{p}/raw/cal/001__.
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype after exam 1
+plink --bfile 11 --exclude-snps 500301,rs12643283 --make-bed --out 12
+```
+
+## ADNI2/GO
+
+The duplicates for ADNI2 are listed in __{p}/raw/cal/001/11.dup__:
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype after exam 1
+printf "%s:%8d duplicates\n" ADNI2 $(cat 21.dup.snp | wc -l)
+head -n 12 21.dup | column -t
+tail -n 12 21.dup | column -t
+# list groups of duplicates, and counts
+cut -f1 21.dup | sort | uniq -c
+```
+
+There all 1180 lines, but the duplicates in ADNI2/GO are exclusively
+variants without location, which were assigned to a dummy basepair 0
+of dummy chromosome 0, which are unlikely (though not impossible) to
+be true duplicates.
+
+Therefore, it is pointless to pick one out of the only dummy clique
+at, and we shall leave them alone.
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype after exam 1
+## do nothng, but use symbolic links as result
+ln -sf 21.bed 22.bed
+ln -sf 21.bim 22.bim
+ln -sf 21.fam 22.fam
+```
+
+No actually file but symbolic links prefixedby __22__ were created to
+act as if they are the result of resolving duplicates in __21.*__.
+
+
+## Omni2.5M
+
+The duplicates in __Omni2.5M__ are listed in __31.dup__ under
+the same working directory **{p}/raw/cal/001**:
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype past exam 1
+printf "%s:%8d duplicates\n" Omni2.5M $(cat 31.dup | wc -l)
+head -n 12 31.dup | column -t
+tail -n 12 31.dup | column -t
+printf "%8d true duplicates:\n" $(grep -v "^00" 31.dup | wc -l)
+grep "^03" 31.dup | head -n 24 | column -t
+```
+
+It has 16,552 lines, although many variants are in unclear location,
+but there are still 9,314 lines of true duplicates. Retain one variant
+in each clique with the lowest missing rate, and highest MAF should
+the former is tied.
+
+Among each group, it seems one of them have its ID in the typical "rs"
+format, looking up a few on [dbSNP](https://www.ncbi.nlm.nih.gov/snp)
+ddid turn up records of matching chromosome, location, and major/minor
+alleles, even the allele frequency is quite close. 
+
+It is preferable to assign the RS ID to the retained variant, even if
+that ID was original assigned to soon to be discarded variant.
+
+Here we resort to R code:
+```{r, eval=TRUE}
+setwd('/mnt/research/StatGen/adni/raw/cal/001')
+options(stringsAsFactors = FALSE)
+## read the duplication report, discard variants of unclear location.
+dup <- read.delim("31.dup", header=FALSE)
+names(dup) <- c("tid", "chr", "vid", "cm", "bp", "a1", "a2", "mis", "maf")
+dup <- subset(dup, chr > 0)
+dup <- cbind(dup, rn=seq(nrow(dup))) # append row number
+
+## find the best variant in each duplication group
+library(plyr) # provides a groupby - regroup mechanism
+sel <- ddply(dup, ~chr+bp+a1+a2, function(g)
+{
+    r <- arrange(g, mis, desc(maf))[1, c("vid", "rn")]
+    i <- grep("^rs", g$vid, value=TRUE)
+    if(length(i) > 0) r$vid <- i
+    r
+})
+
+## save retained variants, with preferred ID, as a BIM file
+ret <- dup[sel$rn, ]
+ret$vid <- sel$vid
+write.table(ret[, 2:7], "31.ret.bim", quote=FALSE,
+            col.names=FALSE, row.names=FALSE)
+```
+
+When doen, __31.ret__ shoudl appear under the current working direcoty
+**{p}/raw/cal/001**, listing the location of variants to be retained,
+with prefered RS ID attached when available.
+
+Now do the following:
+
+  * exclude all duplicates from Omni2.5M;
+  * extract variants to be retained, assign prefered ID;
+  * combind the above to from a data with no duplicates;
+
+```{sh, eval=TRUE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - genotype past exam 1
+
+# no duplicates (ndp)
+cut -f3 31.dup > 31.dup.vid
+plink --bfile 31 --exclude 31.dup.vid --make-bed --out 31.ndp
+
+# variants to be retained from each duplicate grup (ret)
+plink --bfile 31 --extract 31.ret.bim --make-bed --out 31.ret
+
+# new file set free from duplications
+plink --bfile 31.ndp --bmerge 31.ret --make-bed --out 32
+```
+
+When done, file set __32__ appears with variants that are strictly
+non-duplicate. A few variants are still dupliate in terms of location
+in chromsomes, but not in allele type and order, we leave them alone
+for now.
+
+
+# Exam 2
+
+See if the variant calls are sufficiently overlapped, and can thus be
+merged.
+
+As ADNI stated, the last, Omni2.5M, is a recall of the early two
+ADNI1 and ADNI2/GO, thus overlapped samples should occure between
+ADNI1 and Omni2.5M, also between ADNI2/GO and Omni2.5M, but
+not between ADNI1 and ADNI2/GO.
+
+## Sample overlaping
+
+Search the FAM files for sample ID occured in multiple calls.
+
+### ADNI1 and ADINGO/2
+
+The two were put under __{p}/raw/cal/001__ as two file set 12 and 22:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/001;  cd $w	# working directory - output of exam 1
+cat [12]2.fam | cut -f2 -d' ' | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+As expected, none of 1550 samples is shared between two early calls.
+
+### Omni2.5M and ADNI1
+
+These two are numbered 11 and 31 under {p}/raw/cal/001, repectively:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+w=raw/cal/001;     cd $w	# working directory - output of exam 1
+cat [13]1.fam | cut -f2 -d' ' | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+261 out of 1308 samples appeared in both calls.
+
+### Omni2.5M and ADNI2/GO
+
+These two are numbered 21 and 31 under {p}/raw/cal/001, repectively:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+d=$p/raw/cal/001;  cd $d	# working directory - output of exam 1
+cat [23]1.fam | cut -f2 -d' ' | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+427 out of 1178 samples appeared in both calls.
+
+
+## Variant consistancy
+
+Check BIM files for variant shared accross calls.
+
+### Omni2.5M and ADNI1
+
+They are numbered 11 and 31 in **{p}/raw/cal/001**:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/001;  cd $w	# working directory - output of exam 1
+cat [13]1.bim | cut -f1,2,4 | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+332,243 out of 2,667,876 variants are shared, which is 54% of ADNI1.
+
+### Omni2.5M and ADNI2/GO
+They are numbered 21 and 31 in **{p}/raw/cal/001**:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/001;  cd $w	# working directory - output of exam 1
+cat [23]1.bim | cut -f1,2,4 | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+689,488 out of 2,406,870 are shared between, which is 96% of ADNI2/GO.
+
+### ADNI1 and ADNI2/GO
+The two early calls are numbered 11 and 21 in **{p}/raw/cal/000**:
+```{sh, eval=FALSE}
+p=$GRP/adni;       cd $p	# project directory
+w=$p/raw/cal/001;  cd $w	# working directory - output of exam 1
+cat [12]1.bim | cut -f1,2,4 | sort | uniq -c | awk '{print $1}' | sort | uniq -c
+```
+335,847 out of 1,000,092 are shared, which is 55% of ADNI1's, or 46% of
+ADNI2/GO.
+
+
+## Merge ADNI2/GO and Omni2.5M
+
+  * most of ADNI2/GO's variants can be retained.
+  * for samples appeared in both calls, the more recent Omni2.5M
+  take precedence.
+  
+Find samples unique for ADNIGO2
+```{sh, eval=FALSE}
+p=$GRP/adni;      cd $p         # project directory
+w=$p/raw/cal;     cd $w         # working directory
+s=001                           # output of exam 1
+d=002; mkdir -p $d              # output of exam 2
+
+cut $s/21.fam -f2 -d' ' | sort > id2 # id of ADNI2/GO
+cut $s/31.fam -f2 -d' ' | sort > id3 # id of Omni2.5M
+comm id2 id3 -23    > un2       # unique for ADNIGO2
+
+echo -n "sample size ADNI GO/2:"
+wc -l id2                       # expect: n(id2)-n(un2) = 427
+echo -n "  unique to ADNI GO/2:"
+wc -l un2
+
+# index the FAM file with individual ID
+awk <$s/21.fam '{print $2,$0}' | sort -k1,1b > fam
+
+# take out FID and IID of samples unique to ADNIGO2
+join fam un2 | awk '{print $2,$3}' > kpp
+
+plink --bfile $s/21 --keep kpp --make-bed --out $s/2u
+rm {id[23],un2,fam,kpp}
+```
+As expected, the number of samples unique to ADNIGO2 (366) equals the
+size of ADNIGO2 (793) minus those shared with Omni2.5M (427)
+previously reported. After extraction, file set **2u** should appear
+under **{p}/raw/cal/001**.
+
+Merge samples unique to ADNI2/GO and those in Omni2.5M:
+```{sh, eval=FALSE}
+p=$GRP/adni;      cd $p         # project directory
+w=$p/raw/cal;     cd $w         # working directory
+s=001                           # result of exam 1
+d=002                           # output of exam 2
+cat $s/[23]1.bim | cut -f2 | sort | uniq -c | awk '$1==2 {print $2}' > snp
+plink --bfile $s/2u --bmerge $s/31 --extract snp --make-bed --out $d/23
+# clean up
+rm snp
+```
+The result is 689,488 variants among 1178 individuals saved in file
+set **23** under **{p}/raw/cal/002**, meaning the merge between the
+2nd (ADNI2/GO) and the 3rd (Omni2.5M) calls.
+
+## ADNI1
+
+for now, we leave ADNI1 alone because it shares too few variants with
+other calls (roughly half of ADNI1).
