@@ -1,0 +1,253 @@
+#+TITLE: ADNI: manage called genotype
+#+AUTHOR: Xiaoran Tong
+
+* Intro
+
+We would like to clean up and merge three GWAS wide calls for ADNI (Alzheimer’s
+Disease Neuroimaging Initiative).
+
+By the time of 11-18-2019, ADNI have provided three sets of variant calling:
+  - ADNI1 GWAS
+    - version 2
+    - genotyped using the Illumina Human610-Quad BeadChip
+    - intensity data processed with GenomeStudio v2009.1
+    - in PLINK format.
+  - ADNI2/GO
+    - version 1, 2013-06-2
+    - genotyped using the Illumina HumanOmniExpress BeadChip
+    - intensity data processed with GenomeStudio v2009.1
+    - in PLINK format, two parts
+  - Omni2.5M
+    - version 2014-02-20;
+    - genotyped using the Ilumina Omni 2.5M BeadChip;
+    - accompanied a WGS (whole-genome sequence) re-call of ADNI1/2/GO;
+    - in PLINK format.
+See *doc/ADNI\_Genetics\_Info_March2011.pdf*  for more detail.
+
+The earlest call (*ADNI1*) used on human reference genome build GRCh36/Hg18, it
+must up lift to GRCh37 to match the two later calls (ADNI2/GO and Omni2.5M).
+
+Some ADNI participants  underwent more than one genotype call,  the merged data
+must ensure each individual only have only one genotype.
+
+* Downloads
+
+At [[http://adni.loni.usc.edu][ADNI]], expand [ACCESS DATA and SAMPLES][[[http://adni.loni.usc.edu/data-samples/access-data][DATA]]] and login.
+
+Goto *DOWNLOAD -> Genetic Data*, in the openned page, go through three items in
+panel to the left:
+
+  - ADNI WGS + Omni2.5M,
+  - ADNI1 GWAS,
+  - ADNIGO/2 GWAS.
+
+download called SNP in  PLINK format. In our case, the  downloads are put under
+*raw/cal/dwn* and decompressed:
+#+BEGIN_SRC sh :exports both :results scalar
+  cd /mnt/research/StatGen/adni	# project directory
+  ls -Ggh raw/cal/dwn		# downloads
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+total 521M
+-rw-rw-r-- 1 113M Nov 22  2019 ADNI_cluster_01_forward_757LONI.bed
+-rw-rw-r-- 1  20M Nov 22  2019 ADNI_cluster_01_forward_757LONI.bim
+-rw-rw-r-- 1  18K Nov 22  2019 ADNI_cluster_01_forward_757LONI.fam
+-rw-rw-r-- 1  76M Nov 22  2019 ADNI_GO_2_Forward_Bin.bed
+-rw-rw-r-- 1  25M Nov 22  2019 ADNI_GO_2_Forward_Bin.bim
+-rw-rw-r-- 1  11K Nov 22  2019 ADNI_GO_2_Forward_Bin.fam
+-rw-rw-r-- 1  63M Nov 22  2019 ADNI_GO2_GWAS_2nd_orig_BIN.bed
+-rw-rw-r-- 1  24M Nov 22  2019 ADNI_GO2_GWAS_2nd_orig_BIN.bim
+-rw-rw-r-- 1 8.2K Nov 22  2019 ADNI_GO2_GWAS_2nd_orig_BIN.fam
+-rw-rw-r-- 1 461M Nov 27  2019 WGS_Omni25_BIN_wo_ConsentsIssues.bed
+-rw-rw-r-- 1  79M Nov 22  2019 WGS_Omni25_BIN_wo_ConsentsIssues.bim
+-rw-rw-r-- 1  19K Nov 22  2019 WGS_Omni25_BIN_wo_ConsentsIssues.fam
+#+end_example
+
+Here is the rough chronological order of the data files:
+  - earlier
+    - ADNI1 GWAS: *ADNI_cluster_01_forward_757LONI*;
+    - ADNIGO/2 GWAS: 
+      - part 1: *ADNI_GO_2_Forward_Bin*;
+      - part 2: *ADNI_GO2_GWAS_2nd_orig_BIN*;
+  - recent
+    - ADNI WGS + Omni2.5M: *WGS_Omni25_BIN_wo_ConsentsIssues*
+	
+To ease future reference, create short-named links under *raw/cal/000*:
+#+BEGIN_SRC sh :exports both :results scalar
+  cd /mnt/research/StatGen/adni   # project directory
+  d=raw/cal/000                   # target  directory
+  mkdir -p $d
+
+  for e in {bed,bim,fam}; do      # create links
+      ln -sf ../dwn/ADNI_cluster_01_forward_757LONI.$e  $d/11.$e
+      ln -sf ../dwn/ADNI_GO_2_Forward_Bin.$e            $d/21.$e
+      ln -sf ../dwn/ADNI_GO2_GWAS_2nd_orig_BIN.$e       $d/22.$e
+      ln -sf ../dwn/WGS_Omni25_BIN_wo_ConsentsIssues.$e $d/31.$e
+  done
+  ls -Ggh $d/[1-3]*.{bed,bim,fam} # show case
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+lrwxrwxrwx 1 42 Sep 17 00:58 raw/cal/000/11.bed -> ../dwn/ADNI_cluster_01_forward_757LONI.bed
+lrwxrwxrwx 1 42 Sep 17 00:58 raw/cal/000/11.bim -> ../dwn/ADNI_cluster_01_forward_757LONI.bim
+lrwxrwxrwx 1 42 Sep 17 00:58 raw/cal/000/11.fam -> ../dwn/ADNI_cluster_01_forward_757LONI.fam
+lrwxrwxrwx 1 32 Sep 17 00:58 raw/cal/000/21.bed -> ../dwn/ADNI_GO_2_Forward_Bin.bed
+lrwxrwxrwx 1 32 Sep 17 00:58 raw/cal/000/21.bim -> ../dwn/ADNI_GO_2_Forward_Bin.bim
+lrwxrwxrwx 1 32 Sep 17 00:58 raw/cal/000/21.fam -> ../dwn/ADNI_GO_2_Forward_Bin.fam
+lrwxrwxrwx 1 37 Sep 17 00:58 raw/cal/000/22.bed -> ../dwn/ADNI_GO2_GWAS_2nd_orig_BIN.bed
+lrwxrwxrwx 1 37 Sep 17 00:58 raw/cal/000/22.bim -> ../dwn/ADNI_GO2_GWAS_2nd_orig_BIN.bim
+lrwxrwxrwx 1 37 Sep 17 00:58 raw/cal/000/22.fam -> ../dwn/ADNI_GO2_GWAS_2nd_orig_BIN.fam
+lrwxrwxrwx 1 43 Sep 17 00:58 raw/cal/000/31.bed -> ../dwn/WGS_Omni25_BIN_wo_ConsentsIssues.bed
+lrwxrwxrwx 1 43 Sep 17 00:58 raw/cal/000/31.bim -> ../dwn/WGS_Omni25_BIN_wo_ConsentsIssues.bim
+lrwxrwxrwx 1 43 Sep 17 00:58 raw/cal/000/31.fam -> ../dwn/WGS_Omni25_BIN_wo_ConsentsIssues.fam
+#+end_example
+
+* Check ADNI1
+
+ADNI1 aligns to GRCh36/Hg18, list some SNPs in *raw/cal/000/11.bim* and search them
+on [[https://genome.ucsc.edu/index.html][UCSC]].
+#+BEGIN_SRC sh :export both :results vector
+  cd /mnt/research/StatGen/adni   # project directory
+  s=raw/cal/000                   # source  directory
+  tail -n+1000 $s/11.bim | head   # the 1000-1010 th. SNP
+#+END_SRC
+
+#+RESULTS:
+| 1 | rs2898853  | 7.63912 | 4892064 | C | T |
+| 1 | rs12409253 |  7.6457 | 4894312 | A | G |
+| 1 | rs10915683 | 7.65077 | 4896045 | G | A |
+| 1 | rs4654470  | 7.65089 | 4896086 | G | A |
+| 1 | rs12040043 | 7.65249 | 4896632 | A | G |
+| 1 | rs9426467  | 7.65422 | 4897223 | G | A |
+| 1 | rs4654471  | 7.66219 | 4899946 | C | T |
+| 1 | rs10915295 | 7.66629 | 4901348 | G | T |
+| 1 | rs12042532 | 7.66795 | 4901913 | G | T |
+| 1 | rs7555212  | 7.66887 | 4902227 | C | T |
+
+Goto [[https://genome.ucsc.edu/index.html][UCSC]], [[https://genome.ucsc.edu/cgi-bin/hgGateway][Genomes]], under *Human Assembly*, choose *Mar.2006(NCBI36/hg18)* then
+search *rs12040043*  (the 5th SNPs in  the above table). In  the [[https://genome.ucsc.edu/cgi-bin/hgTracks?hgtgroup_map_close=1&hgtgroup_phenDis_close=0&hgtgroup_genes_close=0&hgtgroup_rna_close=0&hgtgroup_expression_close=0&hgtgroup_regulation_close=0&hgtgroup_compGeno_close=0&hgtgroup_neandertal_close=0&hgtgroup_denisova_close=0&hgtgroup_varRep_close=0&hgtgroup_encodeGenes_close=1&hgtgroup_encodeTxLevels_close=1&hgtgroup_encodeChip_close=1&hgtgroup_encodeChrom_close=1&hgtgroup_encodeCompAndVar_close=1&hgsid=899834629_cbJ2nK5ZB2kXpQzwNzPiZ6O5ixUN&position=rs12040043&hgt.positionInput=rs12040043&goButton=go&hgt.suggestTrack=knownGene&db=hg18&c=chr1&l=4896381&r=4896882&pix=1888&dinkL=2.0&dinkR=2.0][results]], click
+the [[https://genome.ucsc.edu/cgi-bin/hgTracks?position=chr1:4896382-4896882&hgsid=899834629_cbJ2nK5ZB2kXpQzwNzPiZ6O5ixUN&snp130=pack&addHighlight=hg18.chr1%253A4896632%252D4896632%2523fcfcac&hgFind.matches=rs12040043,][link]] under *dbSNP build 130*, which  redirect us to the [[https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg18][UCSC Genome Browser]]
+around the  desired SNP, click  the label [[https://genome.ucsc.edu/cgi-bin/hgc?hgsid=899834629_cbJ2nK5ZB2kXpQzwNzPiZ6O5ixUN&c=chr1&l=4896381&r=4896882&o=4896631&t=4896632&g=snp130&i=rs12040043][rs12040043]] in  the bottom to  see the
+final report, which says:
+  - Position: chr1:4896632-4896632;
+  - Observed: A/G;
+  - Reference allele: G;
+The chromosome, basepair  position and alleles match the 5th  entry. We confirm
+that ADNI1 does align to GRCh36/hg18.
+
+* Liftover ADNI1
+
+To merge ADNI1's genotype with the later genotypes, it is necessary to re-align
+ADNI1 to GRCh37 using [[https://genome.ucsc.edu/cgi-bin/hgLiftOver][UCSC Liftover]].
+
+Extract variant positions from PLINK BIM file *raw/cal/11.bim* and save them as
+[[https://genome.ucsc.edu/FAQ/FAQformat.html#format1][UCSC BED]] format (not to be confused with PLINK BED!)
+
+Some special  care  is  required,
+  - PLINK BIM is 1  based and UCSC BED is 0 based, as  a consequence, the k th.
+    nucleotide in PLINK BIM is represented in  UCSC BED as a size 1 region from
+    k-1 to k.
+  - PLINK BIM uses digits for non-autosome, but UCSC BED uses alphabats;
+  - PLINK  treats the  pseudo-autosome region  (*PAR*) in  *X* chromosome  as a
+    stand alone chromosome *XY* (#25), but UCSC BED treat it as part of the *X*
+    (numbered 23).
+#+BEGIN_SRC sh
+  cd /mnt/research/StatGen/adni	# project directory
+  cd raw/cal			# working directory
+
+  # merge XY-25 (PAR) back into X-23 (non-PAR)
+  plink --bfile 000/11 --merge-x --make-bed --out tmp
+
+  # convert ADNI1's BIM to UCSC BED
+  sed <tmp.bim 's/^23/X/; s/^24/Y/; s/^26/M/' | \
+      awk 'OFS="\t" {print "chr"$1,$4-1,$4,$2}' > 000/11.b36
+#+END_SRC
+The variant positions is saved as *raw/cal/000/11.b36*. Here is the preview
+#+BEGIN_SRC sh :exports both :results vector
+  cd /mnt/research/StatGen/adni	# project directory
+  s=raw/cal/000			# source  directory
+  tail -n+1000 $s/11.b36 | head	# the 1000-1010 th. SNP
+#+END_SRC
+
+#+RESULTS:
+| chr1 | 4892063 | 4892064 | rs2898853  |
+| chr1 | 4894311 | 4894312 | rs12409253 |
+| chr1 | 4896044 | 4896045 | rs10915683 |
+| chr1 | 4896085 | 4896086 | rs4654470  |
+| chr1 | 4896631 | 4896632 | rs12040043 |
+| chr1 | 4897222 | 4897223 | rs9426467  |
+| chr1 | 4899945 | 4899946 | rs4654471  |
+| chr1 | 4901347 | 4901348 | rs10915295 |
+| chr1 | 4901912 | 4901913 | rs12042532 |
+| chr1 | 4902226 | 4902227 | rs7555212  |
+
+We see the rows match the previous table of 10 SNPs.
+
+On  [[https://genome.ucsc.edu/cgi-bin/hgLiftOver][UCSC  Liftover]],
+  - set *Original Assembly* to *(NCBI36/HG18)*;
+  - set *New Assembly* to *(GRCh37/hg19)*; 
+  - hit *browse* and upload *raw/cal/000/11.b36*;
+  - hit *submit file* to start the liftover.
+When finished, under  the *result* section, hit *View Conversions*  to save the
+new coordinate as *raw/cal/000/11.b37*.
+
+Note: the liftover service usually drop a few variants due to failed matching.
+
+From  the original  ADNI1 genotype,  extract variants  listed in  *11.b37*, and
+overwrite the GRCh36 coordinates with elevated coordinates in *11.b37*; lastly,
+split pseudo-autosome region (PAR) from X chromosome, and set male heterozygous
+haploid genotype in non-PAR to missing.
+#+BEGIN_SRC sh
+  cd /mnt/research/StatGen/adni	# project directory
+  cd raw/cal			# working directory
+  s=000				# source
+  d=001				# destination
+
+  # extract elevated variants
+  cut -f4 $s/11.b37 > elv
+  plink --bfile tmp --extract elv --make-bed --out elv
+
+  # overwrite positions with b37
+  awk <elv.bim   '{print $2"\t"$0}'   | sort -k1,1b > bm1
+  awk <$s/11.b37 '{print $4"\t"$2+1}' | sort -k1,1b > bm2
+  join bm1 bm2 -t $'\t' -o 1.2,1.3,1.4,2.2,1.6,1.7 | sort -k1n,1 -k4n,4 > elv.bim
+
+  # split X to PAR and non-PAR, also correct wrong assignment
+  plink --bfile elv --split-x b37 --make-bed --out spx
+  # treat heterozygous haploid genotype in non-PAR as missing.
+  plink --bfile spx --set-hh-missing --make-bed --out $d/11
+  # clean up
+  rm {bm1,bm2,tmp,elv,spx}*
+  rm $d/*.{hh,log}
+#+END_SRC
+
+To  merge  or  split PAR  (#25)  into  or  from)  X (#23),  see  PLINK  options
+[[https://www.cog-genomics.org/plink/1.9/data#split_x][--split-x/--merge-x]].  Now, the ADNI1  genotype under *raw/cal/001* should align
+to GRCh37/hg19 assembly.
+
+* Double check ADNI1
+This time, look for *rs12040043* only.
+#+BEGIN_SRC sh :exports both :results vector
+  cd /mnt/research/StatGen/adni   # project directory
+  s=raw/cal/001                   # source  directory
+  grep rs12040043 $s/11.bim       # look for rs12040043
+#+END_SRC
+
+#+RESULTS:
+| 1 | rs12040043 | 7.65249 | 4996772 | A | G |
+
+As we can see, the location of *4996772* is already different from the original
+GRCh36 assembly.
+
+Goto [[https://genome.ucsc.edu/index.html][UCSC]],  [[https://genome.ucsc.edu/cgi-bin/hgGateway][Genomes]] again, but  choose *Feb.2009(GRCh37/hg19)* this  time, then
+search for *rs12040043*. In the results,  click the [[https://genome.ucsc.edu/cgi-bin/hgTracks?position=chr1:4996672-4996872&hgsid=899888575_OlLFJIHBQacNVfRALxFSZnw8OfOU&dbSnp153Common=pack&dbSnp153Common_sel=1&dbSnp153ViewVariants_sel=1&addHighlight=hg19.chr1%253A4996772%252D4996772%2523fcfcac&hgFind.matches=rs12040043,][link]] under dbSNP153 to goto
+the Genome Browser, and click the label  [[https://genome.ucsc.edu/cgi-bin/hgc?hgsid=899888575_OlLFJIHBQacNVfRALxFSZnw8OfOU&c=chr1&l=4996671&r=4996872&o=4996771&t=4996772&g=dbSnp153Common&i=rs12040043][rs12040043]] in the bottom for the final
+report. Here is the statement,
+  - Position: chr1:4996772-4996772;
+  - Reference allele: G;
+  - Alternate allele: A.
+It confirms that ADNI1 genotype was indeed re-aligned to GRCh37/hg19 assembly.
+

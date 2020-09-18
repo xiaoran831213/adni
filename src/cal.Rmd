@@ -4,14 +4,13 @@ author: "Xiaoran Tong"
 output: "html_document"
 ---
 
-We would like to merge three GWAS wide calls for ADNI (Alzheimer’s
-Disease Neuroimaging Initiative) into one genotype data.
+We would  like to  merge three  GWAS wide calls  for ADNI  (Alzheimer’s Disease
+Neuroimaging Initiative) into one genotype data.
 
 
 # Introduction
 
-By the time of 11-18-2019, ADNI have provided two sets of variant
-calling:
+By the time of 11-18-2019, ADNI have provided two sets of variant calling:
 
   * ADNI1 GWAS
     - version 2
